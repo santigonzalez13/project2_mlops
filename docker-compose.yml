@@ -1,0 +1,317 @@
+# Licenciado a la Apache Software Foundation (ASF) bajo uno
+# o más acuerdos de licencia de colaboradores. Consulta el archivo NOTICE
+# distribuido con este trabajo para información adicional
+# sobre la propiedad de los derechos de autor. La ASF licencia este archivo
+# bajo la Licencia Apache, Versión 2.0 (la "Licencia");
+# no puedes usar este archivo excepto en cumplimiento
+# con la Licencia. Puedes obtener una copia de la Licencia en
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# A menos que lo requiera la ley aplicable o se acuerde por escrito,
+# el software distribuido bajo la Licencia se distribuye sobre una
+# BASE "TAL CUAL", SIN GARANTÍAS NI CONDICIONES DE NINGÚN TIPO,
+# ya sean expresas o implícitas. Consulta la Licencia para
+# conocer los permisos y limitaciones específicos bajo la Licencia.
+#
+# Configuración básica del clúster de Airflow para CeleryExecutor con Redis y PostgreSQL.
+#
+# ADVERTENCIA: Esta configuración es para desarrollo local. No la uses en un entorno de producción.
+#
+# Esta configuración admite la configuración básica usando variables de entorno o un archivo .env
+# Las siguientes variables están soportadas:
+#
+# AIRFLOW_IMAGE_NAME           - Nombre de la imagen Docker usada para ejecutar Airflow.
+#                                Valor predeterminado: apache/airflow:2.6.0
+# AIRFLOW_UID                  - ID de usuario en los contenedores de Airflow
+#                                Valor predeterminado: 50000
+# AIRFLOW_PROJ_DIR             - Ruta base donde se montarán todos los archivos.
+#                                Valor predeterminado: .
+# Estas configuraciones son útiles principalmente para pruebas independientes o ejecución de Airflow en modo de prueba.
+#
+# _AIRFLOW_WWW_USER_USERNAME   - Nombre de usuario para la cuenta de administrador (si se solicita).
+#                                Valor predeterminado: airflow
+# _AIRFLOW_WWW_USER_PASSWORD   - Contraseña para la cuenta de administrador (si se solicita).
+#                                Valor predeterminado: airflow
+# _PIP_ADDITIONAL_REQUIREMENTS - Requisitos adicionales de PIP a añadir al iniciar todos los contenedores.
+#                                Usa esta opción SOLO para verificaciones rápidas. Instalar requisitos al inicio
+#                                del contenedor se hace CADA VEZ que se inicia el servicio.
+#                                Una mejor forma es construir una imagen personalizada o extender la imagen oficial
+#                                como se describe en https://airflow.apache.org/docs/docker-stack/build.html.
+#                                Valor predeterminado: ''
+#
+# Siéntete libre de modificar este archivo para ajustarlo a tus necesidades.
+---
+version: '3.8'
+# Sección que contiene configuraciones comunes para los servicios de Airflow.
+x-airflow-common:
+  &airflow-common
+  # Se comenta la línea de la imagen predeterminada para Airflow.
+  # Si deseas añadir dependencias personalizadas o actualizar los paquetes del proveedor, puedes usar tu imagen extendida.
+  # Simplemente comenta la línea de la imagen y coloca tu Dockerfile en el directorio donde se encuentra este archivo docker-compose.yaml
+  # y descomenta la línea "build" a continuación. Luego corre `docker-compose build` para construir las imágenes.
+  #image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.6.0}  # Imagen predeterminada de Airflow
+  build: . # Utiliza el Dockerfile en el directorio actual para construir la imagen de Airflow
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor # Define el tipo de ejecutor para Airflow (en este caso, Celery).
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow 
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow 
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow # Configura el backend de resultados de Celery.
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0 # Define la URL del broker de Redis.
+    AIRFLOW__CORE__FERNET_KEY: '' # Clave Fernet para cifrar las conexiones.
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true' # Configura que los DAGs estén en pausa al ser creados.
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false' # Desactiva la carga de ejemplos predeterminados en Airflow.
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true' # Habilita la verificación de salud del planificador de Airflow.
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-} # Para añadir requisitos adicionales de pip (comentado por defecto).
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags # Monta el directorio de DAGs en el contenedor.
+    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs # Monta el directorio de logs en el contenedor.
+    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins # Monta el directorio de plugins en el contenedor
+    - ${AIRFLOW_PROJ_DIR:-.}/datos:/opt/airflow/datos # Monta el directorio de datos en el contenedor.
+  user: "${AIRFLOW_UID:-50000}:0" # Define el usuario que ejecutará los contenedores.
+  depends_on:
+    &airflow-common-depends-on
+    redis:
+      condition: service_healthy # Asegura que Redis esté saludable antes de arrancar.
+    postgres:
+      condition: service_healthy # Asegura que PostgreSQL esté saludable antes de arrancar.
+
+services:
+  postgres: # Servicio para PostgreSQL.
+    image: postgres:13 # Imagen de PostgreSQL.
+    environment:
+      POSTGRES_USER: airflow # Usuario de la base de datos.
+      POSTGRES_PASSWORD: airflow # Contraseña de la base de datos.
+      POSTGRES_DB: airflow  # Nombre de la base de datos.
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data  # Monta un volumen para la base de datos de PostgreSQL
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"] # Verifica la disponibilidad de la base de datos PostgreSQL.
+      interval: 10s # Intervalo entre verificaciones.
+      retries: 5  # Número de reintentos.
+      start_period: 5s # Tiempo de inicio antes de la primera verificación.
+    restart: always # Reinicia el servicio siempre que sea necesario.
+
+  mysql: # Servicio para MySQL.
+    image: mysql:latest # Imagen de MySQL.
+    ports:
+      - "3306:3306" # Expone el puerto 3306.
+    environment:
+      MYSQL_ROOT_PASSWORD: airflow   # Contraseña del usuario root de MySQL.
+      MYSQL_DATABASE: penguin_data   # Base de datos predeterminada.
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"] # Verificación de disponibilidad de MySQL.
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: always # Reinicia el servicio siempre que sea necesario.
+    
+    volumes:
+      - mysql_data:/var/lib/mysql # Monta un volumen para los datos de MySQL.
+
+  redis: # Servicio para Redis.
+    image: redis:latest # Imagen de Redis.
+    expose:
+      - 6379 # Expone el puerto 6379 (no mapea al host).
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"] # Verificación de disponibilidad de Redis.
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always # Reinicia el servicio siempre que sea necesario.
+  
+  # Otros servicios de Airflow (webserver, scheduler, worker, triggerer, etc.)
+  # Todos estos servicios comparten configuraciones comunes definidas en 'airflow-common'.
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always # Reinicia el servicio siempre que sea necesario.
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    environment:
+      <<: *airflow-common-env
+      # Required to handle warm shutdown of the celery workers properly
+      # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
+      DUMB_INIT_SETSID: "0"
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    #volumes:  # Añade esta línea y la siguiente para incluir tu volumen de dataset
+    #  - ./datos:/opt/airflow/datos
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    # yamllint disable rule:line-length
+    command:
+      - -c
+      - |
+        function ver() {
+          printf "%04d%04d%04d%04d" $${1//./ }
+        }
+        airflow_version=$$(AIRFLOW__LOGGING__LOGGING_LEVEL=INFO && gosu airflow airflow version)
+        airflow_version_comparable=$$(ver $${airflow_version})
+        min_airflow_version=2.2.0
+        min_airflow_version_comparable=$$(ver $${min_airflow_version})
+        if (( airflow_version_comparable < min_airflow_version_comparable )); then
+          echo
+          echo -e "\033[1;31mERROR!!!: Too old Airflow version $${airflow_version}!\e[0m"
+          echo "The minimum Airflow version supported: $${min_airflow_version}. Only use this or higher!"
+          echo
+          exit 1
+        fi
+        if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD follow the instructions below to set "
+          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
+          echo "For other operating systems you can get rid of the warning with manually created .env file:"
+          echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#setting-the-right-airflow-user"
+          echo
+        fi
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        disk_available=$$(df / | tail -1 | awk '{print $$4}')
+        warning_resources="false"
+        if (( mem_available < 4000 )) ; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\e[0m"
+          echo "At least 4GB of memory required. You have $$(numfmt --to iec $$((mem_available * one_meg)))"
+          echo
+          warning_resources="true"
+        fi
+        if (( cpus_available < 2 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\e[0m"
+          echo "At least 2 CPUs recommended. You have $${cpus_available}"
+          echo
+          warning_resources="true"
+        fi
+        if (( disk_available < one_meg * 10 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough Disk space available for Docker.\e[0m"
+          echo "At least 10 GBs recommended. You have $$(numfmt --to iec $$((disk_available * 1024 )))"
+          echo
+          warning_resources="true"
+        fi
+        if [[ $${warning_resources} == "true" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\e[0m"
+          echo "Please follow the instructions to increase amount of resources available:"
+          echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
+          echo
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    # yamllint enable rule:line-length
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+    user: "0:0"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}:/sources
+
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    # Workaround for entrypoint issue. See: https://github.com/apache/airflow/issues/16252
+    command:
+      - bash
+      - -c
+      - airflow
+
+  # Puedes habilitar Flower añadiendo la opción "--profile flower", por ejemplo: docker-compose --profile flower up
+  # o especificándolo explícitamente en la línea de comandos, por ejemplo: docker-compose up flower.
+  # Ver: https://docs.docker.com/compose/profiles/
+  flower:
+    <<: *airflow-common
+    command: celery flower
+    profiles:
+      - flower
+    ports:
+      - "5555:5555"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+# Volúmenes de Docker
+volumes:
+  postgres-db-volume: # Volumen para almacenar los datos de PostgreSQL.
+  mysql_data: # Volumen para almacenar los datos de MySQL
