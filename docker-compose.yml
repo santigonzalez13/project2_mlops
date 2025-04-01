@@ -1,47 +1,4 @@
-# Licenciado a la Apache Software Foundation (ASF) bajo uno
-# o más acuerdos de licencia de colaboradores. Consulta el archivo NOTICE
-# distribuido con este trabajo para información adicional
-# sobre la propiedad de los derechos de autor. La ASF licencia este archivo
-# bajo la Licencia Apache, Versión 2.0 (la "Licencia");
-# no puedes usar este archivo excepto en cumplimiento
-# con la Licencia. Puedes obtener una copia de la Licencia en
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# A menos que lo requiera la ley aplicable o se acuerde por escrito,
-# el software distribuido bajo la Licencia se distribuye sobre una
-# BASE "TAL CUAL", SIN GARANTÍAS NI CONDICIONES DE NINGÚN TIPO,
-# ya sean expresas o implícitas. Consulta la Licencia para
-# conocer los permisos y limitaciones específicos bajo la Licencia.
-#
-# Configuración básica del clúster de Airflow para CeleryExecutor con Redis y PostgreSQL.
-#
-# ADVERTENCIA: Esta configuración es para desarrollo local. No la uses en un entorno de producción.
-#
-# Esta configuración admite la configuración básica usando variables de entorno o un archivo .env
-# Las siguientes variables están soportadas:
-#
-# AIRFLOW_IMAGE_NAME           - Nombre de la imagen Docker usada para ejecutar Airflow.
-#                                Valor predeterminado: apache/airflow:2.6.0
-# AIRFLOW_UID                  - ID de usuario en los contenedores de Airflow
-#                                Valor predeterminado: 50000
-# AIRFLOW_PROJ_DIR             - Ruta base donde se montarán todos los archivos.
-#                                Valor predeterminado: .
-# Estas configuraciones son útiles principalmente para pruebas independientes o ejecución de Airflow en modo de prueba.
-#
-# _AIRFLOW_WWW_USER_USERNAME   - Nombre de usuario para la cuenta de administrador (si se solicita).
-#                                Valor predeterminado: airflow
-# _AIRFLOW_WWW_USER_PASSWORD   - Contraseña para la cuenta de administrador (si se solicita).
-#                                Valor predeterminado: airflow
-# _PIP_ADDITIONAL_REQUIREMENTS - Requisitos adicionales de PIP a añadir al iniciar todos los contenedores.
-#                                Usa esta opción SOLO para verificaciones rápidas. Instalar requisitos al inicio
-#                                del contenedor se hace CADA VEZ que se inicia el servicio.
-#                                Una mejor forma es construir una imagen personalizada o extender la imagen oficial
-#                                como se describe en https://airflow.apache.org/docs/docker-stack/build.html.
-#                                Valor predeterminado: ''
-#
-# Siéntete libre de modificar este archivo para ajustarlo a tus necesidades.
----
+
 version: '3.8'
 # Sección que contiene configuraciones comunes para los servicios de Airflow.
 x-airflow-common:
@@ -93,24 +50,6 @@ services:
       retries: 5  # Número de reintentos.
       start_period: 5s # Tiempo de inicio antes de la primera verificación.
     restart: always # Reinicia el servicio siempre que sea necesario.
-
-  mysql: # Servicio para MySQL.
-    image: mysql:latest # Imagen de MySQL.
-    ports:
-      - "3306:3306" # Expone el puerto 3306.
-    environment:
-      MYSQL_ROOT_PASSWORD: airflow   # Contraseña del usuario root de MySQL.
-      MYSQL_DATABASE: penguin_data   # Base de datos predeterminada.
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"] # Verificación de disponibilidad de MySQL.
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: always # Reinicia el servicio siempre que sea necesario.
-    
-    volumes:
-      - mysql_data:/var/lib/mysql # Monta un volumen para los datos de MySQL.
 
   redis: # Servicio para Redis.
     image: redis:latest # Imagen de Redis.
@@ -310,8 +249,88 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+  
+  # nuestros servicios propios  
+  #--------------------------------------------------------------------
+  mysql: # Servicio para MySQL.
+    image: mysql:8.0
+    container_name: mysql
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306" # Expone el puerto 3306.
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=mlflow_database
+      - MYSQL_USER=admin
+      - MYSQL_PASSWORD=adminadmin # Base de datos predeterminada.
+    volumes:
+      - ./mysql:/var/lib/mysql # Monta un volumen para los datos de MySQL.
+    networks:
+      - mynetwork
+    restart: always # Reinicia el servicio siempre que sea necesario.
 
-# Volúmenes de Docker
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    environment:
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - mynetwork
+    restart: always
+
+  mlflow:
+    build: 
+      context: ./mlflow
+      dockerfile: Dockerfile.app
+    container_name: mlflow
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_BACKEND_STORE_URI=mysql+pymysql://admin:adminadmin@mysql/mlflow_database
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    ports:
+      - "5000:5000"  # Puerto para acceder a la UI de MLflow
+    volumes:
+      - ./mlflow:/mlflow  # Persistencia de datos de MLflow en el directorio local
+    depends_on:
+     - mysql
+     - minio
+    networks:
+      - mynetwork
+    restart: always
+    
+      
+  inference:
+    build: 
+      context: ./inference
+      dockerfile: Dockerfile.app
+    container_name: inference
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mlflow
+    networks:
+      - mynetwork
+    restart: always
+
+
 volumes:
-  postgres-db-volume: # Volumen para almacenar los datos de PostgreSQL.
-  mysql_data: # Volumen para almacenar los datos de MySQL
+  postgres-db-volume:
+
+networks:
+  mynetwork:
+    driver: bridge
