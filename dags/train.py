@@ -13,6 +13,9 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sqlalchemy import create_engine
 import json
 
+#HOLAAAAAAAAAAAAAAA
+
+
 # Configuración de parámetros por defecto del DAG de Airflow
 default_args = {
     'owner': 'airflow',

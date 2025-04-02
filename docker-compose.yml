@@ -82,6 +82,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - mynetwork
 
   airflow-scheduler:
     <<: *airflow-common
@@ -97,6 +99,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - mynetwork
 
   airflow-worker:
     <<: *airflow-common
@@ -119,8 +123,10 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-    #volumes:  # Añade esta línea y la siguiente para incluir tu volumen de dataset
-    #  - ./datos:/opt/airflow/datos
+    volumes:  # Añade esta línea y la siguiente para incluir tu volumen de dataset
+      - ./datos:/opt/airflow/datos
+    networks:
+      - mynetwork
 
   airflow-triggerer:
     <<: *airflow-common
@@ -140,7 +146,6 @@ services:
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
-    # yamllint disable rule:line-length
     command:
       - -c
       - |
@@ -200,10 +205,16 @@ services:
           echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
           echo
         fi
-        mkdir -p /sources/logs /sources/dags /sources/plugins
-        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+
+        # Crear directorios de logs y configurarlos con permisos correctos
+        mkdir -p /opt/airflow/logs/scheduler
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/logs
+        mkdir -p /opt/airflow/logs/webserver
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/logs/webserver
+        mkdir -p /opt/airflow/logs/worker
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/logs/worker
         exec /entrypoint airflow version
-    # yamllint enable rule:line-length
+
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_UPGRADE: 'true'

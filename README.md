@@ -1,4 +1,13 @@
-# Taller: Uso practico de Airflow
+# Taller: Entrenamiento e inferencia de ML usando Airflow y MLFlow
+
+sudo chown -R 50000:0 ./logs  # Asegura que el directorio tiene los permisos correctos
+sudo chmod -R 755 ./logs      # Permite que el contenedor pueda leer y escribir en el directorio
+
+docker network create mynetwork
+
+docker-compose up
+
+
 
 ## 📌 Descripción
 
